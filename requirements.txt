@@ -1,2 +1,3 @@
 pandas
 st-gsheets-connection
+plotly
