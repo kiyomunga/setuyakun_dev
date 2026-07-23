@@ -50,7 +50,7 @@ def get_current_balances():
             
     return balances
 
-st.title('資産管理システム Ver.3.1')
+st.title('資産管理システム Ver.3.2')
 
 tab1, tab2, tab3 = st.tabs(['📊 メインメニュー', '📝 記録メニュー', '📈 分析ダッシュボード'])
 
@@ -103,14 +103,48 @@ with tab1:
                     st.cache_data.clear()
                     st.rerun()
 
-    # === 【パッチ適用箇所】取引履歴明細ビューの追加 ===
+    # === 【パッチ適用箇所】取引履歴明細のUI色分け処理 ===
     st.write('---')
     st.subheader('📜 取引履歴一覧（明細）')
     df_all_tx = get_transactions()
     
     if not df_all_tx.empty:
-        # ユーザーが直近に入力したデータが上に来るように逆順でソートして描画
-        st.dataframe(df_all_tx.iloc[::-1], use_container_width=True)
+        df_display = df_all_tx.copy()
+        
+        # 1. 総資産への影響を判定し、符号(+/-)付きの文字列に変換
+        def format_impact(row):
+            try:
+                amt = int(row['金額'])
+            except ValueError:
+                amt = 0
+                
+            if row['出金元'] == '外部' and row['入金先'] != '外部':
+                return f"+ ¥{amt:,}" # 総資産増加
+            elif row['入金先'] == '外部' and row['出金元'] != '外部':
+                return f"- ¥{amt:,}" # 総資産減少
+            else:
+                return f"± ¥{amt:,}" # 資金移動（変化なし）
+                
+        df_display['金額'] = df_display.apply(format_impact, axis=1)
+        
+        # 2. 符号に応じてCSSで文字色を割り当てる関数
+        def color_impact(val):
+            if isinstance(val, str):
+                if val.startswith('+'):
+                    return 'color: #00BFFF; font-weight: bold;' # 青字
+                elif val.startswith('-'):
+                    return 'color: #FF4B4B; font-weight: bold;' # 赤字
+            return ''
+            
+        # 3. 直近のデータが上に来るように逆順ソートし、スタイルを適用して描画
+        df_reversed = df_display.iloc[::-1]
+        try:
+            df_styled = df_reversed.style.map(color_impact, subset=['金額'])
+        except AttributeError:
+            # Pandasのバージョン互換性フォールバック
+            df_styled = df_reversed.style.applymap(color_impact, subset=['金額'])
+            
+        st.dataframe(df_styled, use_container_width=True)
     else:
         st.info('記録された取引履歴データが存在しません。')
     # ==================================================
