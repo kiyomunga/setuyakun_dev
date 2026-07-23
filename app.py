@@ -50,7 +50,7 @@ def get_current_balances():
             
     return balances
 
-st.title('資産管理システム Ver.3.0')
+st.title('資産管理システム Ver.3.1')
 
 tab1, tab2, tab3 = st.tabs(['📊 メインメニュー', '📝 記録メニュー', '📈 分析ダッシュボード'])
 
@@ -102,6 +102,18 @@ with tab1:
                     update_sources(df_src)
                     st.cache_data.clear()
                     st.rerun()
+
+    # === 【パッチ適用箇所】取引履歴明細ビューの追加 ===
+    st.write('---')
+    st.subheader('📜 取引履歴一覧（明細）')
+    df_all_tx = get_transactions()
+    
+    if not df_all_tx.empty:
+        # ユーザーが直近に入力したデータが上に来るように逆順でソートして描画
+        st.dataframe(df_all_tx.iloc[::-1], use_container_width=True)
+    else:
+        st.info('記録された取引履歴データが存在しません。')
+    # ==================================================
 
 # --- 【タブ2】記録メニュー ---
 with tab2:
