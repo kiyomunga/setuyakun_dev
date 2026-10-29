@@ -123,12 +123,12 @@ def calculate_system_state(target_year):
             
     extra_income = df_inc_year[df_inc_year['カテゴリ'] == '臨時収入']['金額'].sum()
 
-    # === 【要件1】予算ベースの余剰プール計算 ===
+    # 予算ベースの余剰プール計算
     budget_surplus = (base_saving + total_income) - target_saving - fc_total - ev_total
     current_surplus = budget_surplus + completed_delta + extra_income
     state['surplus_pool'] = current_surplus
     
-    # === 【要件2】今月の利用可能額計算 ===
+    # 今月の利用可能額計算
     now = datetime.datetime.now()
     if target_year == now.year:
         df_exp_base_ytd = df_exp_year[df_exp_year['イベントID'] == '']
@@ -155,7 +155,7 @@ def calculate_system_state(target_year):
     return state, df_tx, df_ev, df_conf, df_ev_details, df_fc, df_inc_det
 
 # --- 4. フロントエンド・レンダリング ---
-st.title('資産管理システム Ver.7.0 (完全統合作業環境)')
+st.title('資産管理システム Ver.7.1 (完全統合作業環境)')
 
 current_year_default = datetime.datetime.now().year
 target_year_ui = st.sidebar.number_input("📅 基準年（全体対象）", min_value=2020, max_value=2050, value=current_year_default, step=1)
@@ -199,7 +199,7 @@ with tab1:
             st.info('支出データがありません。')
 
 # ==========================================
-# タブ2：トランザクション記録＆履歴
+# タブ2：トランザクション記録＆履歴 (UI色彩最適化)
 # ==========================================
 with tab2:
     st.header('📝 お金の出入りを記録')
@@ -234,10 +234,41 @@ with tab2:
     st.write('---')
     st.subheader('📜 取引履歴一覧（直近50件）')
     if not df_tx.empty:
-        st.dataframe(df_tx.iloc[::-1].head(50), use_container_width=True)
+        df_display = df_tx.copy()
+        
+        # UI色彩判定ロジック
+        def format_impact(row):
+            try:
+                amt = int(row['金額'])
+            except:
+                amt = 0
+            if row['出金元'] == '外部' and row['入金先'] != '外部':
+                return f"+ ¥{amt:,}"
+            elif row['入金先'] == '外部' and row['出金元'] != '外部':
+                return f"- ¥{amt:,}"
+            else:
+                return f"± ¥{amt:,}"
+                
+        df_display['金額'] = df_display.apply(format_impact, axis=1)
+        
+        def color_impact(val):
+            if isinstance(val, str):
+                if val.startswith('+'):
+                    return 'color: #00BFFF; font-weight: bold;'
+                elif val.startswith('-'):
+                    return 'color: #FF4B4B; font-weight: bold;'
+            return ''
+            
+        df_reversed = df_display.iloc[::-1].head(50)
+        try:
+            df_styled = df_reversed.style.map(color_impact, subset=['金額'])
+        except AttributeError:
+            df_styled = df_reversed.style.applymap(color_impact, subset=['金額'])
+            
+        st.dataframe(df_styled, use_container_width=True)
 
 # ==========================================
-# タブ3：予算案入力 (数式入力対応 ＋ 収入内訳追加)
+# タブ3：予算案入力 
 # ==========================================
 with tab3:
     st.header("✍️ 予算案入力タブ")
@@ -253,7 +284,7 @@ with tab3:
             if p_base is not None and p_target is not None:
                 if df_conf.empty: df_conf = pd.DataFrame(columns=['対象年', '前年末貯蓄', '予測収入', '目標貯蓄'])
                 df_conf = df_conf[df_conf['対象年'] != input_year] 
-                df_conf.loc[len(df_conf)] = [input_year, p_base, 0, p_target] # 予測収入カラムはレガシーとして0埋め
+                df_conf.loc[len(df_conf)] = [input_year, p_base, 0, p_target] 
                 update_config(df_conf)
                 st.cache_data.clear()
                 st.rerun()
@@ -386,7 +417,7 @@ with tab3:
                         st.rerun()
 
 # ==========================================
-# タブ4：予算案確認 (収入内訳ツリー対応)
+# タブ4：予算案確認
 # ==========================================
 with tab4:
     st.header("👁️ 予算案確認タブ")
@@ -456,7 +487,7 @@ with tab4:
     st.subheader(f"予算ベースの余剰プール: {surplus_pool:,}円")
 
 # ==========================================
-# タブ5：イベント状態制御 (What-If分析 ＆ 差分還元)
+# タブ5：イベント状態制御 
 # ==========================================
 with tab5:
     st.header("🎪 イベント状態制御 (予実管理)")
