@@ -51,7 +51,6 @@ def calculate_system_state(target_year):
     df_tx['イベントID'] = df_tx['イベントID'].fillna('')
     df_tx['年'] = pd.to_datetime(df_tx['日付'], errors='coerce').dt.year
     
-    # 財源の現在残高計算
     balances = {str(row['財源名']): int(row['初期残高']) for _, row in df_src.iterrows()}
     if not df_tx.empty:
         for _, row in df_tx.iterrows():
@@ -61,7 +60,6 @@ def calculate_system_state(target_year):
     state['total_assets'] = sum(balances.values()) if balances else 0
     state['balances'] = balances
     
-    # 予算設定のフェッチ
     df_conf = get_config()
     df_conf['対象年'] = pd.to_numeric(df_conf['対象年'], errors='coerce')
     conf_target = df_conf[df_conf['対象年'] == target_year]
@@ -73,12 +71,10 @@ def calculate_system_state(target_year):
         base_saving = est_income = target_saving = 0
     base_pool = (base_saving + est_income) - target_saving
     
-    # トランザクション集計
     df_exp_year = df_tx[(df_tx['入金先'] == '外部') & (df_tx['年'] == target_year)]
     df_inc_year = df_tx[(df_tx['出金元'] == '外部') & (df_tx['年'] == target_year)]
     event_actuals = df_exp_year.groupby('イベントID')['金額'].sum().to_dict()
     
-    # イベント予約予算の計算（内訳とのマージ）
     df_ev = get_events()
     df_ev_details = get_event_details()
     reserved_budget = 0
@@ -95,15 +91,12 @@ def calculate_system_state(target_year):
         active_events['予約残額'] = (active_events['総予算'] - active_events['実績額']).clip(lower=0)
         reserved_budget = active_events['予約残額'].sum()
     
-    # 実績支出・収入
     extra_income = df_inc_year[df_inc_year['カテゴリ'] == '臨時収入']['金額'].sum()
     total_actual_exp = df_exp_year['金額'].sum()
     
-    # ダッシュボード用（動的）余剰プール
     current_surplus_pool = base_pool + extra_income - total_actual_exp - reserved_budget
     state['surplus_pool'] = current_surplus_pool
     
-    # ペースメーカー
     now = datetime.datetime.now()
     if target_year == now.year:
         remaining_months = 12 - now.month + 1
@@ -122,13 +115,15 @@ def calculate_system_state(target_year):
     return state, df_tx, df_ev, df_conf, df_ev_details
 
 # --- 4. フロントエンド・レンダリング ---
-st.title('資産管理システム Ver.6.0 (完全統合作業環境)')
+st.title('資産管理システム Ver.6.1 (完全統合作業環境)')
 
 current_year_default = datetime.datetime.now().year
 target_year_ui = st.sidebar.number_input("📅 基準年（全体対象）", min_value=2020, max_value=2050, value=current_year_default, step=1)
 
 state, df_tx, df_ev, df_conf, df_ev_details = calculate_system_state(target_year_ui)
 df_fc = get_fixed_costs()
+if not df_fc.empty:
+    df_fc['対象年'] = pd.to_numeric(df_fc['対象年'], errors='coerce')
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(['📊 ダッシュボード', '📝 記録＆履歴', '✍️ 予算案入力', '👁️ 予算案確認', '🎪 イベント状態制御'])
 
@@ -137,11 +132,9 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(['📊 ダッシュボード', '📝 記�
 # ==========================================
 with tab1:
     st.header(f"🎯 KGIマイルストーン & 実績監視 ({target_year_ui}年)")
-    
     col1, col2, col3 = st.columns(3)
     col1.metric("現在の総資産額（ハードウェア）", f"¥{state['total_assets']:,}")
     col2.metric(f"余剰プール（現在価値）", f"¥{int(state['surplus_pool']):,}", "実績支出と予約予算控除後")
-    
     if target_year_ui == current_year_default:
         remaining = int(state['this_month_remaining'])
         delta_color = "normal" if remaining >= 0 else "inverse"
@@ -157,7 +150,6 @@ with tab1:
             df_exp['年月'] = pd.to_datetime(df_exp['日付']).dt.strftime('%Y-%m')
             months = sorted(df_exp['年月'].unique(), reverse=True)
             selected_month = st.selectbox('分析対象月', months)
-            
             df_month = df_exp[df_exp['年月'] == selected_month]
             if not df_month.empty:
                 df_grouped = df_month.groupby('カテゴリ')['金額'].sum().reset_index()
@@ -188,7 +180,6 @@ with tab2:
             tx_cat = st.selectbox('カテゴリ', category_options)
             tx_event = st.selectbox(f'紐付けイベント ({target_year_ui}年)', event_options)
             tx_memo = st.text_input('メモ')
-            
         if st.form_submit_button('トランザクションを実行'):
             if tx_src == '外部' and tx_dest == '外部': st.error('無効な取引です。')
             elif tx_src == tx_dest: st.error('同じ財源が選択されています。')
@@ -206,7 +197,7 @@ with tab2:
         st.dataframe(df_tx.iloc[::-1].head(50), use_container_width=True)
 
 # ==========================================
-# タブ3：予算案入力 (ワイヤーフレーム準拠)
+# タブ3：予算案入力 (ワイヤーフレーム準拠 ＋ 削除機能)
 # ==========================================
 with tab3:
     st.header("✍️ 予算案入力タブ")
@@ -259,20 +250,79 @@ with tab3:
     st.write("---")
     st.subheader("イベント詳細内訳")
     if not df_ev.empty:
-        ev_dict = dict(zip(df_ev['イベント名'], df_ev['イベントID']))
-        with st.form(key='ev_det_form', clear_on_submit=True):
-            sel_ev_name = st.selectbox("イベントを選択", list(ev_dict.keys()))
-            det_name = st.text_input("項目名（例：宿泊費）")
-            det_amt = st.number_input("予算額（円）", min_value=0, step=100, key='deta')
-            if st.form_submit_button("内訳を追加"):
-                if det_name:
-                    if df_ev_details.empty: df_ev_details = pd.DataFrame(columns=['イベントID', '項目名', '予算額'])
-                    df_ev_details.loc[len(df_ev_details)] = [ev_dict[sel_ev_name], det_name, det_amt]
-                    update_event_details(df_ev_details)
-                    st.cache_data.clear()
-                    st.rerun()
+        df_ev_target_input = df_ev[df_ev['対象年'] == target_year_ui]
+        ev_dict = dict(zip(df_ev_target_input['イベント名'], df_ev_target_input['イベントID'])) if not df_ev_target_input.empty else {}
+        if ev_dict:
+            with st.form(key='ev_det_form', clear_on_submit=True):
+                sel_ev_name = st.selectbox(f"イベントを選択 ({target_year_ui}年)", list(ev_dict.keys()))
+                det_name = st.text_input("項目名（例：宿泊費）")
+                det_amt = st.number_input("予算額（円）", min_value=0, step=100, key='deta')
+                if st.form_submit_button("内訳を追加"):
+                    if det_name:
+                        if df_ev_details.empty: df_ev_details = pd.DataFrame(columns=['イベントID', '項目名', '予算額'])
+                        df_ev_details.loc[len(df_ev_details)] = [ev_dict[sel_ev_name], det_name, det_amt]
+                        update_event_details(df_ev_details)
+                        st.cache_data.clear()
+                        st.rerun()
+        else:
+            st.info(f"{target_year_ui}年のイベントがありません。先にイベントを登録してください。")
     else:
         st.info("先にイベントを登録してください。")
+
+    # === 追加パッチ：登録データの削除（ロールバック機能） ===
+    st.write("---")
+    st.subheader("🗑️ 登録データの削除")
+    st.caption("誤って登録した予算データを個別に削除します。※イベント本体を削除すると、紐づく内訳もすべて自動で削除（カスケード削除）されます。")
+    
+    del_c1, del_c2, del_c3 = st.columns(3)
+    
+    with del_c1:
+        st.markdown("**1. 固定費用の削除**")
+        df_fc_target = df_fc[df_fc['対象年'] == target_year_ui] if not df_fc.empty else pd.DataFrame()
+        fc_list = df_fc_target['項目名'].tolist() if not df_fc_target.empty else []
+        with st.form(key='del_fc_form'):
+            del_fc_name = st.selectbox("削除する項目", fc_list if fc_list else ["データなし"])
+            if st.form_submit_button("固定費用を削除"):
+                if fc_list and del_fc_name != "データなし":
+                    df_fc = df_fc[~((df_fc['対象年'] == target_year_ui) & (df_fc['項目名'] == del_fc_name))]
+                    update_fixed_costs(df_fc)
+                    st.cache_data.clear()
+                    st.rerun()
+
+    with del_c2:
+        st.markdown("**2. イベント本体の削除**")
+        df_ev_target = df_ev[df_ev['対象年'] == target_year_ui] if not df_ev.empty else pd.DataFrame()
+        ev_dict_del = dict(zip(df_ev_target['イベント名'], df_ev_target['イベントID'])) if not df_ev_target.empty else {}
+        with st.form(key='del_ev_form'):
+            del_ev_name = st.selectbox("削除するイベント", list(ev_dict_del.keys()) if ev_dict_del else ["データなし"])
+            if st.form_submit_button("イベントを削除"):
+                if ev_dict_del and del_ev_name != "データなし":
+                    target_id = ev_dict_del[del_ev_name]
+                    df_ev = df_ev[df_ev['イベントID'] != target_id]
+                    update_events(df_ev)
+                    # カスケード削除（内訳も一掃）
+                    if not df_ev_details.empty:
+                        df_ev_details = df_ev_details[df_ev_details['イベントID'] != target_id]
+                        update_event_details(df_ev_details)
+                    st.cache_data.clear()
+                    st.rerun()
+
+    with del_c3:
+        st.markdown("**3. イベント内訳の削除**")
+        if ev_dict_del:
+            sel_ev_for_det = st.selectbox("対象イベント", list(ev_dict_del.keys()), key='del_ev_sel')
+            target_id_det = ev_dict_del[sel_ev_for_det]
+            det_list = df_ev_details[df_ev_details['イベントID'] == target_id_det]['項目名'].tolist() if not df_ev_details.empty else []
+            with st.form(key='del_det_form'):
+                del_det_name = st.selectbox("削除する内訳", det_list if det_list else ["データなし"])
+                if st.form_submit_button("内訳を削除"):
+                    if det_list and del_det_name != "データなし":
+                        df_ev_details = df_ev_details[~((df_ev_details['イベントID'] == target_id_det) & (df_ev_details['項目名'] == del_det_name))]
+                        update_event_details(df_ev_details)
+                        st.cache_data.clear()
+                        st.rerun()
+        else:
+            st.info(f"{target_year_ui}年のイベントがありません。")
 
 # ==========================================
 # タブ4：予算案確認 (ワイヤーフレーム準拠)
@@ -300,8 +350,6 @@ with tab4:
     st.subheader("＜出費＞")
     fc_total = 0
     if not df_fc.empty:
-        df_fc['対象年'] = pd.to_numeric(df_fc['対象年'], errors='coerce')
-        df_fc['予算額'] = pd.to_numeric(df_fc['予算額'], errors='coerce').fillna(0)
         df_fc_y = df_fc[df_fc['対象年'] == target_year_budget]
         fc_total = int(df_fc_y['予算額'].sum())
         
