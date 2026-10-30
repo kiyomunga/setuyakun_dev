@@ -44,7 +44,7 @@ def update_fixed_costs(df): conn.update(worksheet="fixed_costs", data=df)
 def get_income_details(): return fetch_data("income_details", 3)
 def update_income_details(df): conn.update(worksheet="income_details", data=df)
 
-# --- 2. 数式パーサー（3000*5等の計算処理） ---
+# --- 2. 数式パーサー ---
 def parse_math(expr):
     if not expr: return 0
     try:
@@ -53,7 +53,7 @@ def parse_math(expr):
     except:
         return None
 
-# --- 3. 演算エンジン（予算ベース余剰プールと予実マージ） ---
+# --- 3. 演算エンジン ---
 def calculate_system_state(target_year):
     state = {}
     
@@ -73,7 +73,7 @@ def calculate_system_state(target_year):
     state['total_assets'] = sum(balances.values()) if balances else 0
     state['balances'] = balances
     
-    # 予算・収入・固定費の設定値フェッチ
+    # 設定値フェッチ
     df_conf = get_config()
     df_conf['対象年'] = pd.to_numeric(df_conf['対象年'], errors='coerce')
     conf_target = df_conf[df_conf['対象年'] == target_year]
@@ -94,7 +94,7 @@ def calculate_system_state(target_year):
         df_fc['予算額'] = pd.to_numeric(df_fc['予算額'], errors='coerce').fillna(0)
         fc_total = int(df_fc[df_fc['対象年'] == target_year]['予算額'].sum())
 
-    # イベント予算の計算
+    # イベント計算
     df_ev = get_events()
     df_ev_details = get_event_details()
     if not df_ev.empty:
@@ -108,12 +108,12 @@ def calculate_system_state(target_year):
     df_ev_y = df_ev[df_ev['対象年'] == target_year] if not df_ev.empty else pd.DataFrame()
     ev_total = df_ev_y['総予算'].sum() if not df_ev_y.empty else 0
 
-    # トランザクション実績の集計
+    # トランザクション集計
     df_exp_year = df_tx[(df_tx['入金先'] == '外部') & (df_tx['年'] == target_year)]
     df_inc_year = df_tx[(df_tx['出金元'] == '外部') & (df_tx['年'] == target_year)]
     event_actuals = df_exp_year.groupby('イベントID')['金額'].sum().to_dict()
     
-    # 差分マージ（完了イベントの予実差分を抽出）
+    # 差分マージ
     completed_delta = 0
     if not df_ev_y.empty:
         df_ev_y['実績額'] = df_ev_y['イベントID'].map(event_actuals).fillna(0)
@@ -123,7 +123,7 @@ def calculate_system_state(target_year):
             
     extra_income = df_inc_year[df_inc_year['カテゴリ'] == '臨時収入']['金額'].sum()
 
-    # 予算ベースの余剰プール計算
+    # 余剰プール計算
     budget_surplus = (base_saving + total_income) - target_saving - fc_total - ev_total
     current_surplus = budget_surplus + completed_delta + extra_income
     state['surplus_pool'] = current_surplus
@@ -155,22 +155,24 @@ def calculate_system_state(target_year):
     return state, df_tx, df_ev, df_conf, df_ev_details, df_fc, df_inc_det
 
 # --- 4. フロントエンド・レンダリング ---
-st.title('資産管理システム Ver.7.1 (完全統合作業環境)')
+st.title('資産管理システム Ver.7.3 (UIバグフィックス版)')
 
 current_year_default = datetime.datetime.now().year
 target_year_ui = st.sidebar.number_input("📅 基準年（全体対象）", min_value=2020, max_value=2050, value=current_year_default, step=1)
 
 state, df_tx, df_ev, df_conf, df_ev_details, df_fc, df_inc_det = calculate_system_state(target_year_ui)
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(['📊 ダッシュボード', '📝 記録＆履歴', '✍️ 予算案入力', '👁️ 予算案確認', '🎪 イベント状態制御'])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(['📊 ダッシュボード', '📝 記録＆履歴', '✍️ 予算案入力', '👁️ 予算案確認', '🎪 イベント制御'])
 
 # ==========================================
 # タブ1：ダッシュボード
 # ==========================================
 with tab1:
     st.header(f"🎯 KGIマイルストーン & 実績監視 ({target_year_ui}年)")
+    
+    st.subheader("💰 現在のハードウェア（資産）状況")
     col1, col2, col3 = st.columns(3)
-    col1.metric("現在の総資産額", f"¥{state['total_assets']:,}")
+    col1.metric("総資産額（合算）", f"¥{state['total_assets']:,}")
     col2.metric(f"余剰プール（予算+差分還元）", f"¥{int(state['surplus_pool']):,}", "固定・イベント控除後 ＋ 完了イベント浮き分")
     
     if target_year_ui == current_year_default:
@@ -179,6 +181,15 @@ with tab1:
         col3.metric(f"{datetime.datetime.now().month}月の自由利用残枠", f"¥{remaining:,}", f"今月消費: ¥{int(state['this_month_spent']):,}", delta_color=delta_color)
     else:
         col3.metric("月平均利用可能枠", f"¥{int(state['monthly_limit']):,}")
+
+    balances = state['balances']
+    if balances:
+        st.write("＜各財源の残高＞")
+        cols = st.columns(len(balances))
+        for idx, (source_name, balance) in enumerate(balances.items()):
+            cols[idx].metric(label=source_name, value=f"¥{balance:,}")
+    else:
+        st.info("登録されている財源がありません。")
 
     st.write("---")
     st.subheader(f'月別・目的別 支出分析 ({target_year_ui}年)')
@@ -191,15 +202,26 @@ with tab1:
             df_month = df_exp[df_exp['年月'] == selected_month]
             if not df_month.empty:
                 df_grouped = df_month.groupby('カテゴリ')['金額'].sum().reset_index()
+                
+                # 円グラフの描画
                 fig = px.pie(df_grouped, values='金額', names='カテゴリ', hole=0.4, title=f'{selected_month} リソース配分比率', color_discrete_sequence=px.colors.qualitative.Pastel)
                 st.plotly_chart(fig, use_container_width=True)
+                
+                # === 追加パッチ：総出費と内訳テーブルの描画 ===
+                month_total = int(df_month['金額'].sum())
+                st.markdown(f"**{selected_month} 総出費: ¥{month_total:,}**")
+                
+                df_table = df_grouped.sort_values(by='金額', ascending=False).copy()
+                df_table['金額'] = df_table['金額'].apply(lambda x: f"¥{int(x):,}")
+                st.dataframe(df_table, use_container_width=True, hide_index=True)
+                # ==========================================
             else:
                 st.info('選択した月のデータがありません。')
         else:
             st.info('支出データがありません。')
 
 # ==========================================
-# タブ2：トランザクション記録＆履歴 (UI色彩最適化)
+# タブ2：トランザクション記録＆履歴 
 # ==========================================
 with tab2:
     st.header('📝 お金の出入りを記録')
@@ -236,35 +258,24 @@ with tab2:
     if not df_tx.empty:
         df_display = df_tx.copy()
         
-        # UI色彩判定ロジック
         def format_impact(row):
-            try:
-                amt = int(row['金額'])
-            except:
-                amt = 0
-            if row['出金元'] == '外部' and row['入金先'] != '外部':
-                return f"+ ¥{amt:,}"
-            elif row['入金先'] == '外部' and row['出金元'] != '外部':
-                return f"- ¥{amt:,}"
-            else:
-                return f"± ¥{amt:,}"
+            try: amt = int(row['金額'])
+            except: amt = 0
+            if row['出金元'] == '外部' and row['入金先'] != '外部': return f"+ ¥{amt:,}"
+            elif row['入金先'] == '外部' and row['出金元'] != '外部': return f"- ¥{amt:,}"
+            else: return f"± ¥{amt:,}"
                 
         df_display['金額'] = df_display.apply(format_impact, axis=1)
         
         def color_impact(val):
             if isinstance(val, str):
-                if val.startswith('+'):
-                    return 'color: #00BFFF; font-weight: bold;'
-                elif val.startswith('-'):
-                    return 'color: #FF4B4B; font-weight: bold;'
+                if val.startswith('+'): return 'color: #00BFFF; font-weight: bold;'
+                elif val.startswith('-'): return 'color: #FF4B4B; font-weight: bold;'
             return ''
             
         df_reversed = df_display.iloc[::-1].head(50)
-        try:
-            df_styled = df_reversed.style.map(color_impact, subset=['金額'])
-        except AttributeError:
-            df_styled = df_reversed.style.applymap(color_impact, subset=['金額'])
-            
+        try: df_styled = df_reversed.style.map(color_impact, subset=['金額'])
+        except AttributeError: df_styled = df_reversed.style.applymap(color_impact, subset=['金額'])
         st.dataframe(df_styled, use_container_width=True)
 
 # ==========================================
@@ -272,7 +283,6 @@ with tab2:
 # ==========================================
 with tab3:
     st.header("✍️ 予算案入力タブ")
-    
     st.subheader("⚙️ 全体予算ベース設定")
     with st.form(key='config_form'):
         col_y, col_b, col_t = st.columns(3)
@@ -288,8 +298,7 @@ with tab3:
                 update_config(df_conf)
                 st.cache_data.clear()
                 st.rerun()
-            else:
-                st.error("入力された数式が不正です。")
+            else: st.error("入力された数式が不正です。")
 
     st.write("---")
     st.subheader("💰 当年予測収入内訳")
@@ -356,13 +365,11 @@ with tab3:
                         update_event_details(df_ev_details)
                         st.cache_data.clear()
                         st.rerun()
-        else:
-            st.info(f"{target_year_ui}年のイベントがありません。先にイベントを登録してください。")
+        else: st.info(f"{target_year_ui}年のイベントがありません。先にイベントを登録してください。")
 
     st.write("---")
     st.subheader("🗑️ 登録データの削除")
     del_c1, del_c2, del_c3 = st.columns(3)
-    
     with del_c1:
         df_fc_target = df_fc[df_fc['対象年'] == target_year_ui] if not df_fc.empty else pd.DataFrame()
         fc_list = df_fc_target['項目名'].tolist() if not df_fc_target.empty else []
@@ -416,9 +423,6 @@ with tab3:
                         st.cache_data.clear()
                         st.rerun()
 
-# ==========================================
-# タブ4：予算案確認
-# ==========================================
 with tab4:
     st.header("👁️ 予算案確認タブ")
     target_year_budget = st.selectbox("確認対象年", range(2025, 2035), index=target_year_ui-2025)
@@ -426,8 +430,7 @@ with tab4:
     base, target = 0, 0
     if not df_conf.empty:
         conf_y = df_conf[df_conf['対象年'] == target_year_budget]
-        if not conf_y.empty:
-            base, target = int(conf_y.iloc[0]['前年末貯蓄']), int(conf_y.iloc[0]['目標貯蓄'])
+        if not conf_y.empty: base, target = int(conf_y.iloc[0]['前年末貯蓄']), int(conf_y.iloc[0]['目標貯蓄'])
             
     income_total = 0
     df_inc_y = pd.DataFrame()
@@ -443,8 +446,7 @@ with tab4:
     st.markdown(f"**当年予測収入: {income_total:,}円 ... ②**")
     if not df_inc_y.empty:
         with st.expander("収入内訳"):
-            for _, row in df_inc_y.iterrows():
-                st.write(f"・{row['項目名']}: {int(row['金額']):,}円")
+            for _, row in df_inc_y.iterrows(): st.write(f"・{row['項目名']}: {int(row['金額']):,}円")
                 
     st.write(f"当年末目標貯蓄: {target:,}円 ... ③")
     st.markdown(f"**当年利用可能金額 (総額) : ① + ② - ③ = {available_total:,}円**")
@@ -459,8 +461,7 @@ with tab4:
     st.markdown(f"**固定費用: {fc_total:,}円**")
     if not df_fc.empty and not df_fc_y.empty:
         with st.expander("内訳"):
-            for _, row in df_fc_y.iterrows():
-                st.write(f"・{row['項目名']}: {int(row['予算額']):,}円")
+            for _, row in df_fc_y.iterrows(): st.write(f"・{row['項目名']}: {int(row['予算額']):,}円")
                 
     st.write("") 
     ev_total_all = 0
@@ -479,20 +480,15 @@ with tab4:
             with st.expander(f"{ename}: {ev_sum:,}円"):
                 with st.expander("内訳"):
                     if not det_df.empty:
-                        for _, d_row in det_df.iterrows():
-                            st.write(f"・{d_row['項目名']}: {int(d_row['予算額']):,}円")
+                        for _, d_row in det_df.iterrows(): st.write(f"・{d_row['項目名']}: {int(d_row['予算額']):,}円")
 
     st.write("---")
     surplus_pool = available_total - fc_total - ev_total_all
     st.subheader(f"予算ベースの余剰プール: {surplus_pool:,}円")
 
-# ==========================================
-# タブ5：イベント状態制御 
-# ==========================================
 with tab5:
     st.header("🎪 イベント状態制御 (予実管理)")
     st.caption("イベント完了時にチェックを入れると、計画予算と実際の支払額の差分（浮いたお金）が余剰プールへ還元されます。")
-    
     if not df_ev.empty:
         df_ev_year = df_ev[df_ev['対象年'] == target_year_ui]
         if not df_ev_year.empty:
@@ -513,7 +509,5 @@ with tab5:
                 st.cache_data.clear()
                 st.success("状態を更新し、余剰プールへの差分マージ処理を発火しました。")
                 st.rerun()
-        else:
-            st.info(f"{target_year_ui}年に登録されているイベントはありません。")
-    else:
-        st.info("現在登録されているイベントはありません。")
+        else: st.info(f"{target_year_ui}年に登録されているイベントはありません。")
+    else: st.info("現在登録されているイベントはありません。")
