@@ -60,7 +60,13 @@ def calculate_system_state(target_year):
     df_src = get_sources()
     df_tx = get_transactions()
     df_tx['金額'] = pd.to_numeric(df_tx['金額'], errors='coerce').fillna(0)
-    df_tx['イベントID'] = df_tx['イベントID'].fillna('')
+    
+    # 欠損列の補完
+    if 'イベントID' not in df_tx.columns:
+        df_tx['イベントID'] = ''
+    else:
+        df_tx['イベントID'] = df_tx['イベントID'].fillna('')
+        
     df_tx['年'] = pd.to_datetime(df_tx['日付'], errors='coerce').dt.year
     
     # 総資産計算
@@ -155,7 +161,7 @@ def calculate_system_state(target_year):
     return state, df_tx, df_ev, df_conf, df_ev_details, df_fc, df_inc_det
 
 # --- 4. フロントエンド・レンダリング ---
-st.title('資産管理システム Ver.7.3 (UIバグフィックス版)')
+st.title('資産管理システム Ver.7.4 (自動修復パッチ適用版)')
 
 current_year_default = datetime.datetime.now().year
 target_year_ui = st.sidebar.number_input("📅 基準年（全体対象）", min_value=2020, max_value=2050, value=current_year_default, step=1)
@@ -202,19 +208,15 @@ with tab1:
             df_month = df_exp[df_exp['年月'] == selected_month]
             if not df_month.empty:
                 df_grouped = df_month.groupby('カテゴリ')['金額'].sum().reset_index()
-                
-                # 円グラフの描画
                 fig = px.pie(df_grouped, values='金額', names='カテゴリ', hole=0.4, title=f'{selected_month} リソース配分比率', color_discrete_sequence=px.colors.qualitative.Pastel)
                 st.plotly_chart(fig, use_container_width=True)
                 
-                # === 追加パッチ：総出費と内訳テーブルの描画 ===
                 month_total = int(df_month['金額'].sum())
                 st.markdown(f"**{selected_month} 総出費: ¥{month_total:,}**")
                 
                 df_table = df_grouped.sort_values(by='金額', ascending=False).copy()
                 df_table['金額'] = df_table['金額'].apply(lambda x: f"¥{int(x):,}")
                 st.dataframe(df_table, use_container_width=True, hide_index=True)
-                # ==========================================
             else:
                 st.info('選択した月のデータがありません。')
         else:
@@ -240,6 +242,7 @@ with tab2:
             tx_cat = st.selectbox('カテゴリ', category_options)
             tx_event = st.selectbox(f'紐付けイベント ({target_year_ui}年)', event_options)
             tx_memo = st.text_input('メモ')
+            
         if st.form_submit_button('トランザクションを実行'):
             parsed_amt = parse_math(tx_amt)
             if parsed_amt is None or parsed_amt <= 0: st.error('金額の入力または数式が不正です。')
@@ -247,9 +250,20 @@ with tab2:
             elif tx_src == tx_dest: st.error('同じ財源が選択されています。')
             else:
                 new_row = [tx_date.strftime('%Y-%m-%d'), tx_src, tx_dest, parsed_amt, tx_memo, tx_cat, tx_event]
-                if df_tx.empty: df_tx = pd.DataFrame(columns=['日付', '出金元', '入金先', '金額', 'メモ', 'カテゴリ', 'イベントID'])
-                df_tx.loc[len(df_tx)] = new_row
-                update_transactions(df_tx)
+                expected_cols = ['日付', '出金元', '入金先', '金額', 'メモ', 'カテゴリ', 'イベントID']
+                
+                # 古い列数のままのデータを読み込んでいた場合への対応（安全装置）
+                if df_tx.empty: 
+                    df_tx_updated = pd.DataFrame(columns=expected_cols)
+                else:
+                    df_tx_updated = df_tx.copy()
+                    for col in expected_cols:
+                        if col not in df_tx_updated.columns:
+                            df_tx_updated[col] = ""
+                    df_tx_updated = df_tx_updated[expected_cols]
+                    
+                df_tx_updated.loc[len(df_tx_updated)] = new_row
+                update_transactions(df_tx_updated)
                 st.cache_data.clear()
                 st.rerun()
 
@@ -423,6 +437,9 @@ with tab3:
                         st.cache_data.clear()
                         st.rerun()
 
+# ==========================================
+# タブ4：予算案確認
+# ==========================================
 with tab4:
     st.header("👁️ 予算案確認タブ")
     target_year_budget = st.selectbox("確認対象年", range(2025, 2035), index=target_year_ui-2025)
